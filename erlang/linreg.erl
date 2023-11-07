@@ -1,12 +1,12 @@
 -module(linreg).
 -export([
 	start/2,
-	learn_ind/6,
+	learn/6,
 	calc_ind/3,
 	worker_ind/3,
-	%calc_sect/2,
+	calc_batch/4,
 	%calc_sect/3,
-	collect_ind/2
+	collect/2
 ]).
 
 -record(dataset, {x=[], y=[]}).
@@ -33,7 +33,7 @@ start(Input, Output) ->
 	
 	% "learn" optimal regression model, on my dataset, learning rate of 0.1, 20 iterations
 	% true for verbosity
-	Trained = learn_ind(Dataset, 0.01, Model, Host, 10, true),
+	Trained = learn(Dataset, 0.01, Model, Host, 10, true),
 	% print out how many processes printed out
 	io:format("Processes: ~w~n", [length(erlang:processes())]),
 	
@@ -49,8 +49,8 @@ start(Input, Output) ->
 	file:write_file(Output, File1).
 	
 
-learn_ind(_, _, Model, _, 0, _) -> Model; 
-learn_ind(Data, L, Model, Host, Iter, Verbose) ->
+learn(_, _, Model, _, 0, _) -> Model; 
+learn(Data, L, Model, Host, Iter, Verbose) ->
 	% a learning algorithm for linear regression that makes individual processes
 		% for each data-point
 	% Data: Dataset of X & Y 
@@ -59,6 +59,7 @@ learn_ind(Data, L, Model, Host, Iter, Verbose) ->
 	% Host: Main process
 	% Iter: For lack of a good algo to stop learning, iterations
 	% Verbose: Print info as iterates?
+	% Worker: Which worker process to use (individual/batch)?
 	
 	% predict values using current model	
 	% get a list of predicted values
@@ -70,10 +71,11 @@ learn_ind(Data, L, Model, Host, Iter, Verbose) ->
 	
 	% calc partial derivative of bias
 	CompareC = [[Y, P] || P <- Predicted, Y <- Data#dataset.y],
-	PartialC = calc_ind(
+	PartialC = calc_batch(
 		CompareC,
 		fun([X, Y]) -> X - Y end,
-		Host
+		Host,
+		10
 	), 
 	Dc = (-2 * lists:sum(PartialC))/length(PartialC),
 	Newb0 = Model#model.b0 - (L * Dc),
@@ -101,23 +103,32 @@ learn_ind(Data, L, Model, Host, Iter, Verbose) ->
 	end,
 	
 	% learn again
-	learn_ind(Data, L, NewModel, Host, Iter-1, Verbose).
+	learn(Data, L, NewModel, Host, Iter-1, Verbose).
 	
 calc_ind(X, F, Host) ->
 	% a function that creates as many processes as values
 	% returns a new list with calculated values
 	Pids = [spawn(fun() -> worker_ind(Host, F, X1) end) || X1 <- X ],
 
-	collect_ind(Pids, []).
+	collect(Pids, []).
 
 worker_ind(Host, Fun, D) ->
 	Res = Fun(D),
 	Host ! { single, Res }.
+	
+calc_batch(X, F, Host, Size) ->
+	% a function that interprets partitions of the dataset as batches
+	Partitions = [ lists:sublist(X, Ind, Size) || Ind <- lists:seq(1,length(X),Size) ],
+	Partitions.
 
-collect_ind([], Vals) -> Vals;
-collect_ind([ _ | Tail ], Vals) ->
+worker_batch(Host, Fun, D) ->
+	Res = Fun(D),
+	Host ! { single, Res }.
+
+collect([], Vals) -> Vals;
+collect([ _ | Tail ], Vals) ->
     receive 
     	{single, Res} ->
     		Newlist = lists:append(Vals, [Res]),
-            	collect_ind(Tail, Newlist)
+            	collect(Tail, Newlist)
     end.
